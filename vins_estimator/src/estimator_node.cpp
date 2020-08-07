@@ -19,7 +19,6 @@ std::condition_variable con;
 double current_time = -1;
 queue<sensor_msgs::ImuConstPtr> imu_buf;
 queue<sensor_msgs::PointCloudConstPtr> feature_buf;
-queue<sensor_msgs::PointCloudConstPtr> marker_buf;
 queue<sensor_msgs::PointCloudConstPtr> relo_buf;
 int sum_of_wait = 0;
 
@@ -96,14 +95,14 @@ void update()
 
 }
 
-std::vector<std::tuple<std::vector<sensor_msgs::ImuConstPtr>, sensor_msgs::PointCloudConstPtr, sensor_msgs::PointCloudConstPtr>>
+std::vector<std::pair<std::vector<sensor_msgs::ImuConstPtr>, sensor_msgs::PointCloudConstPtr>>
 getMeasurements()
 {
-    std::vector<std::tuple<std::vector<sensor_msgs::ImuConstPtr>, sensor_msgs::PointCloudConstPtr, sensor_msgs::PointCloudConstPtr>> measurements;
+    std::vector<std::pair<std::vector<sensor_msgs::ImuConstPtr>, sensor_msgs::PointCloudConstPtr>> measurements;
 
     while (true)
     {
-        if (imu_buf.empty() || feature_buf.empty() || marker_buf.empty())
+        if (imu_buf.empty() || feature_buf.empty())
             return measurements;
 
         if (!(imu_buf.back()->header.stamp.toSec() > feature_buf.front()->header.stamp.toSec() + estimator.td))
@@ -117,13 +116,10 @@ getMeasurements()
         {
             ROS_WARN("throw img, only should happen at the beginning");
             feature_buf.pop();
-            marker_buf.pop();
             continue;
         }
         sensor_msgs::PointCloudConstPtr img_msg = feature_buf.front();
-        sensor_msgs::PointCloudConstPtr marker_msg = marker_buf.front();
         feature_buf.pop();
-        marker_buf.pop();
 
         std::vector<sensor_msgs::ImuConstPtr> IMUs;
         while (imu_buf.front()->header.stamp.toSec() < img_msg->header.stamp.toSec() + estimator.td)
@@ -134,7 +130,7 @@ getMeasurements()
         IMUs.emplace_back(imu_buf.front());
         if (IMUs.empty())
             ROS_WARN("no imu between two image");
-        measurements.emplace_back(IMUs, img_msg, marker_msg);
+        measurements.emplace_back(IMUs, img_msg);
     }
     return measurements;
 }
@@ -180,22 +176,6 @@ void feature_callback(const sensor_msgs::PointCloudConstPtr &feature_msg)
     con.notify_one();
 }
 
-
-void marker_callback(const sensor_msgs::PointCloudConstPtr &marker_msg)
-{
-    static bool init_marker = false;
-    if (!init_marker)
-    {
-        //skip the first detected marker
-        init_marker = true;
-        return;
-    }
-    m_buf.lock();
-    marker_buf.push(marker_msg);
-    m_buf.unlock();
-    con.notify_one();
-}
-
 void restart_callback(const std_msgs::BoolConstPtr &restart_msg)
 {
     if (restart_msg->data == true)
@@ -230,7 +210,7 @@ void process()
 {
     while (true)
     {
-        std::vector<std::tuple<std::vector<sensor_msgs::ImuConstPtr>, sensor_msgs::PointCloudConstPtr, sensor_msgs::PointCloudConstPtr>> measurements;
+        std::vector<std::pair<std::vector<sensor_msgs::ImuConstPtr>, sensor_msgs::PointCloudConstPtr>> measurements;
         std::unique_lock<std::mutex> lk(m_buf);
         con.wait(lk, [&]
                  {
@@ -240,13 +220,9 @@ void process()
         m_estimator.lock();
         for (auto &measurement : measurements)
         {
-            // auto img_msg = measurement.second;
-            auto imu_data = std::get<0>(measurement);
-            auto img_msg = std::get<1>(measurement);
-            auto mkr_msg = std::get<2>(measurement);
+            auto img_msg = measurement.second;
             double dx = 0, dy = 0, dz = 0, rx = 0, ry = 0, rz = 0;
-            
-            for (auto &imu_msg : imu_data)
+            for (auto &imu_msg : measurement.first)
             {
                 double t = imu_msg->header.stamp.toSec();
                 double img_t = img_msg->header.stamp.toSec() + estimator.td;
@@ -287,17 +263,6 @@ void process()
                     //printf("dimu: dt:%f a: %f %f %f w: %f %f %f\n",dt_1, dx, dy, dz, rx, ry, rz);
                 }
             }
-            
-            if(estimator.initialized() == false)
-            {
-                const int markerNum = mkr_msg->channels[0].values.size();
-                for (unsigned int i = 0; i < markerNum; ++i)
-                {
-
-                }
-                estimator.processMarker(mkr_msg);
-                continue;
-            }
             // set relocalization frame
             sensor_msgs::PointCloudConstPtr relo_msg = NULL;
             while (!relo_buf.empty())
@@ -328,6 +293,7 @@ void process()
             ROS_DEBUG("processing vision data with stamp %f \n", img_msg->header.stamp.toSec());
 
             TicToc t_s;
+            /// parsing img_msg
             map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>> image;
             for (unsigned int i = 0; i < img_msg->points.size(); i++)
             {
@@ -346,7 +312,33 @@ void process()
                 xyz_uv_velocity << x, y, z, p_u, p_v, velocity_x, velocity_y;
                 image[feature_id].emplace_back(camera_id,  xyz_uv_velocity);
             }
-            estimator.processImage(image, img_msg->header);
+            if(estimator.initialized() == true)
+                estimator.processImage(image, img_msg->header);
+
+            
+            /// parsing img_msg
+            std::vector<std::tuple<int, std::vector<float>, std::vector<cv::Point3f>>> marker;
+            auto& xyz_of_marker = img_msg->channels[5].values;
+            auto& id_of_marker = img_msg->channels[6].values;
+            auto& rt_of_marker = img_msg->channels[7].values;
+            const int markerNum = id_of_marker.size();
+            for(size_t i = 0; i != markerNum; ++i)
+            {
+                marker.emplace_back(std::tuple<int, std::vector<float>, std::vector<cv::Point3f>>
+                {
+                    id_of_marker[i],
+                    std::vector<float>{rt_of_marker.begin() + i * 6, rt_of_marker.begin() + i * 6 + 6},
+                    std::vector<cv::Point3f>{ 
+                        cv::Point3f(xyz_of_marker[i * 12 + 0], xyz_of_marker[i * 12 + 1], xyz_of_marker[i * 12 + 2]),
+                        cv::Point3f(xyz_of_marker[i * 12 + 3], xyz_of_marker[i * 12 + 4], xyz_of_marker[i * 12 + 5]),
+                        cv::Point3f(xyz_of_marker[i * 12 + 6], xyz_of_marker[i * 12 + 7], xyz_of_marker[i * 12 + 8]),
+                        cv::Point3f(xyz_of_marker[i * 12 + 9], xyz_of_marker[i * 12 + 10], xyz_of_marker[i * 12 + 11])
+                    }
+                });
+            }
+            if(estimator.initialized() == false)
+                estimator.processMarker(marker, img_msg->header);
+
 
             double whole_t = t_s.toc();
             printStatistics(estimator, whole_t);
@@ -389,7 +381,6 @@ int main(int argc, char **argv)
 
     ros::Subscriber sub_imu = n.subscribe(IMU_TOPIC, 2000, imu_callback, ros::TransportHints().tcpNoDelay());
     ros::Subscriber sub_image = n.subscribe("/feature_tracker/feature", 2000, feature_callback);
-    ros::Subscriber sub_image = n.subscribe("/feature_tracker/marker", 2000, marker_callback);
     ros::Subscriber sub_restart = n.subscribe("/feature_tracker/restart", 2000, restart_callback);
     ros::Subscriber sub_relo_points = n.subscribe("/pose_graph/match_points", 2000, relocalization_callback);
 

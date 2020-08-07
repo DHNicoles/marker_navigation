@@ -192,10 +192,12 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
         ROS_DEBUG("publish %f, at %f", feature_points->header.stamp.toSec(), ros::Time::now().toSec());
 
         /// publish markerData
-        sensor_msgs::PointCloudPtr markerData(new sensor_msgs::PointCloud);
-        markerData->header = img_msg->header;
-        markerData->header.frame_id = "world";
+        // sensor_msgs::PointCloudPtr markerData(new sensor_msgs::PointCloud);
+        // markerData->header = img_msg->header;
+        // markerData->header.frame_id = "world";
 
+        sensor_msgs::ChannelFloat32 xyz_of_marker;
+        xyz_of_marker.name = "xyz_of_marker";
         sensor_msgs::ChannelFloat32 id_of_marker;
         id_of_marker.name = "id_of_marker";
         sensor_msgs::ChannelFloat32 rt_of_marker;
@@ -216,17 +218,16 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
             rt_of_marker.values.push_back(t[2]);
 
             std::vector<cv::Point2f>& corners = markerCorners[i];
-            for(size_t j = 0; j != corners.size(); ++j)
+            for(size_t j = 0; j != corners.size(); ++j) // 4
             {
-                geometry_msgs::Point32 pt;
-                pt.x = corners[j].x;
-                pt.y = corners[j].y;
-                pt.z = 0;
-                markerData->points.push_back(pt);
+                xyz_of_marker.values.push_back(corners[j].x);
+                xyz_of_marker.values.push_back(corners[j].y);
+                xyz_of_marker.values.push_back(0);
             }
         }
-        markerData->channels.push_back(id_of_marker);
-        markerData->channels.push_back(rt_of_marker);
+        feature_points->channels.push_back(xyz_of_marker);
+        feature_points->channels.push_back(id_of_marker);
+        feature_points->channels.push_back(rt_of_marker);
         
         // skip the first image; since no optical speed on frist image
         if (!init_pub)
@@ -236,7 +237,7 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
         else
         {
             pub_img.publish(feature_points);
-            pub_marker.publish(markerData);
+            // pub_marker.publish(markerData);
         }
 
         if (SHOW_TRACK)
@@ -293,7 +294,7 @@ int main(int argc, char **argv)
     ros::Subscriber sub_img = n.subscribe(IMAGE_TOPIC, 100, img_callback);
 
     pub_img = n.advertise<sensor_msgs::PointCloud>("feature", 1000);
-    pub_marker = n.advertise<sensor_msgs::PointCloud>("marker", 1000);
+    // pub_marker = n.advertise<sensor_msgs::PointCloud>("marker", 1000);
     pub_match = n.advertise<sensor_msgs::Image>("feature_img",1000);
     pub_restart = n.advertise<std_msgs::Bool>("restart",1000);
     /*

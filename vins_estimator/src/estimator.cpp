@@ -221,6 +221,77 @@ void Estimator::processImage(const map<int, vector<pair<int, Eigen::Matrix<doubl
         last_P0 = Ps[0];
     }
 }
+
+void Estimator::processMarker(std::vector<std::tuple<int, std::vector<float>, std::vector<cv::Point3f>>> &marker, const std_msgs::Header &header)
+{
+    if(marker.empty())
+    {
+        for (unsigned int i = 0; i < dt_buf[frame_count].size(); i++)
+        {
+            double tmp_dt = dt_buf[frame_count][i];
+            Vector3d tmp_linear_acceleration = linear_acceleration_buf[frame_count][i];
+            Vector3d tmp_angular_velocity = angular_velocity_buf[frame_count][i];
+
+            pre_integrations[frame_count - 1]->push_back(tmp_dt, tmp_linear_acceleration, tmp_angular_velocity);
+
+            dt_buf[frame_count - 1].push_back(tmp_dt);
+            linear_acceleration_buf[frame_count - 1].push_back(tmp_linear_acceleration);
+            angular_velocity_buf[frame_count - 1].push_back(tmp_angular_velocity);
+        }
+
+        Headers[frame_count - 1] = Headers[frame_count];
+        Ps[frame_count - 1] = Ps[frame_count];
+        Vs[frame_count - 1] = Vs[frame_count];
+        Rs[frame_count - 1] = Rs[frame_count];
+        Bas[frame_count - 1] = Bas[frame_count];
+        Bgs[frame_count - 1] = Bgs[frame_count];
+
+        delete pre_integrations[frame_count];
+        pre_integrations[frame_count] = new IntegrationBase{acc_0, gyr_0, Bas[WINDOW_SIZE], Bgs[WINDOW_SIZE]};
+
+        dt_buf[frame_count].clear();
+        linear_acceleration_buf[frame_count].clear();
+        angular_velocity_buf[frame_count].clear();
+    }
+    else if (frame_count == WINDOW_SIZE)
+    {
+        /// TODO: check variance of each marker pose T;
+
+
+
+        /// TODO: then, init g, s, v[], bg,
+        
+
+        
+    }
+    else
+    {
+        /// at now , we assume that only one marker detected!!
+        ROS_ASSERT(marker.size() == 1);
+        auto& id = std::get<0>(marker[0]);
+        auto& rt = std::get<1>(marker[0]);
+        auto& corners = std::get<2>(marker[0]);
+
+        cv::Mat rtMat;
+        cv::Mat r(cv::Mat_<float>(3, 1) <<rt[0], rt[1], rt[2]);
+        cv::Mat t(cv::Mat_<float>(3, 1) <<rt[3], rt[4], rt[5]);
+        cv::Rodrigues(r, rtMat);
+        cv::Mat r_c2m = rtMat.inv();
+        MarkerRods[frame_count] << rt[0], rt[1], rt[2];
+        MarkerRs[frame_count]
+            << r_c2m.at<float>(0, 0), r_c2m.at<float>(0, 1), r_c2m.at<float>(0, 2),
+               r_c2m.at<float>(1, 0), r_c2m.at<float>(1, 1), r_c2m.at<float>(1, 2),
+               r_c2m.at<float>(2, 0), r_c2m.at<float>(2, 1), r_c2m.at<float>(2, 2);
+        cv::Mat t_c2m = -rtMat.inv() * t;
+        MarkerPs[frame_count] 
+            << t_c2m.at<float>(0, 0), 
+               t_c2m.at<float>(1, 0), 
+               t_c2m.at<float>(2, 0) ;
+        frame_count++;
+    }
+}
+
+
 bool Estimator::initialStructure()
 {
     TicToc t_sfm;
